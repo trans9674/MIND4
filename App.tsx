@@ -68,11 +68,12 @@ const App: React.FC = () => {
       supabase.from('company_info').select('*').eq('id', 1).single()
     ]);
 
-    setCustomers(customersData || []);
+    // Normalize IDs to string to ensure compatibility with both int8 and uuid DB types
+    setCustomers((customersData || []).map(c => ({ ...c, id: String(c.id) })));
     setColumns(columnsData || []);
-    setTasks(tasksData || []);
-    setEmployees(employeesData || []);
-    setTemplateTasks(templateTasksData || []);
+    setTasks((tasksData || []).map(t => ({ ...t, id: String(t.id), customerId: String(t.customerId) })));
+    setEmployees((employeesData || []).map(e => ({ ...e, id: String(e.id) })));
+    setTemplateTasks((templateTasksData || []).map(t => ({ ...t, id: String(t.id) })));
     setHiddenColumns(settingsData?.hiddenColumns || {});
     setCompanyInfo(companyInfoData || null);
     
@@ -88,13 +89,49 @@ const App: React.FC = () => {
 
       if (count === 0) {
         console.log("No data found. Seeding initial data...");
+        
+        // 1. Insert Static Data
         await supabase.from('columns').insert(INITIAL_COLUMNS);
-        await supabase.from('customers').insert(INITIAL_CUSTOMERS.map(({ created_at, ...c }) => c));
-        await supabase.from('tasks').insert(INITIAL_TASKS.map(({ created_at, ...t }) => t));
-        await supabase.from('employees').insert(INITIAL_EMPLOYEES.map(({ created_at, ...e }) => e));
-        await supabase.from('template_tasks').insert(INITIAL_TEMPLATE_TASKS);
         await supabase.from('app_settings').insert({ id: 1, hiddenColumns: {} });
         await supabase.from('company_info').insert({ id: 1, ...INITIAL_COMPANY_INFO });
+
+        // 2. Insert Employees (Strip IDs to let DB auto-increment if needed)
+        const empPayload = INITIAL_EMPLOYEES.map(({ id, ...rest }) => rest);
+        await supabase.from('employees').insert(empPayload);
+
+        // 3. Insert Template Tasks (Strip IDs)
+        const tmplPayload = INITIAL_TEMPLATE_TASKS.map(({ id, ...rest }) => rest);
+        await supabase.from('template_tasks').insert(tmplPayload);
+
+        // 4. Insert Customers (Strip IDs) & Get new IDs
+        const custPayload = INITIAL_CUSTOMERS.map(({ id, ...rest }) => rest);
+        const { data: newCustomers } = await supabase.from('customers').insert(custPayload).select();
+
+        // 5. Insert Tasks (Distribute among new customers)
+        if (newCustomers && newCustomers.length > 0) {
+            // Generate tasks dynamically for the newly inserted customers
+            const taskPayload = [];
+            // Reuse the logic from INITIAL_TASKS generation but map to actual new DB IDs
+            // Simplified distribution logic for seeding:
+            const { INITIAL_TASKS: originalTasks } = await import('./constants');
+            // We just create a fresh set of tasks for the new customers
+            // Since we can't easily map the hardcoded c_IDs to the new Int IDs without complex logic,
+            // we will skip the pre-generated tasks and rely on user adding them or simple generation
+            // BUT for better UX, let's try to add some dummy tasks
+            
+            // Map the first few original tasks to the first new customer, etc.
+            let taskCounter = 0;
+             for (const cust of newCustomers) {
+                // Add a few sample tasks to each customer
+                 const sampleTasks = originalTasks.slice(taskCounter, taskCounter + 4).map(({ id, customerId, ...t }) => ({
+                     ...t,
+                     customerId: cust.id // Link to new Customer ID
+                 }));
+                 taskPayload.push(...sampleTasks);
+                 taskCounter = (taskCounter + 4) % originalTasks.length;
+             }
+             await supabase.from('tasks').insert(taskPayload);
+        }
       }
 
       await fetchAllData(true);
@@ -103,33 +140,29 @@ const App: React.FC = () => {
     setupData();
   }, [fetchAllData]);
 
-  // Self-healing: Refetch all data on window focus to ensure consistency
+  // Self-healing
   useEffect(() => {
-    const handleFocus = () => {
-        console.log('Window focused, refetching data...');
-        fetchAllData();
-    };
+    const handleFocus = () => fetchAllData();
     const handleVisibilityChange = () => {
-        if (document.visibilityState === 'visible') {
-            console.log('App became visible, refetching data...');
-            fetchAllData();
-        }
+        if (document.visibilityState === 'visible') fetchAllData();
     }
     window.addEventListener('focus', handleFocus);
     document.addEventListener('visibilitychange', handleVisibilityChange);
-
     return () => {
       window.removeEventListener('focus', handleFocus);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [fetchAllData]);
 
-  // Realtime Subscriptions for immediate updates
+  // Realtime Subscriptions
   useEffect(() => {
+    const normalize = (obj: any) => ({ ...obj, id: String(obj.id) });
+    const normalizeTask = (obj: any) => ({ ...obj, id: String(obj.id), customerId: String(obj.customerId) });
+
     const handleCustomerChange = (payload: any) => {
-        if (payload.eventType === 'INSERT') setCustomers(c => [...c, payload.new]);
-        if (payload.eventType === 'UPDATE') setCustomers(c => c.map(item => item.id === payload.new.id ? payload.new : item));
-        if (payload.eventType === 'DELETE') setCustomers(c => c.filter(item => item.id !== payload.old.id));
+        if (payload.eventType === 'INSERT') setCustomers(c => [...c, normalize(payload.new)]);
+        if (payload.eventType === 'UPDATE') setCustomers(c => c.map(item => item.id === String(payload.new.id) ? normalize(payload.new) : item));
+        if (payload.eventType === 'DELETE') setCustomers(c => c.filter(item => item.id !== String(payload.old.id)));
     };
     const handleColumnChange = (payload: any) => {
         if (payload.eventType === 'INSERT') setColumns(c => [...c, payload.new]);
@@ -137,19 +170,19 @@ const App: React.FC = () => {
         if (payload.eventType === 'DELETE') setColumns(c => c.filter(item => item.id !== payload.old.id));
     };
     const handleTaskChange = (payload: any) => {
-        if (payload.eventType === 'INSERT') setTasks(t => [...t, payload.new]);
-        if (payload.eventType === 'UPDATE') setTasks(t => t.map(item => item.id === payload.new.id ? payload.new : item));
-        if (payload.eventType === 'DELETE') setTasks(t => t.filter(item => item.id !== payload.old.id));
+        if (payload.eventType === 'INSERT') setTasks(t => [...t, normalizeTask(payload.new)]);
+        if (payload.eventType === 'UPDATE') setTasks(t => t.map(item => item.id === String(payload.new.id) ? normalizeTask(payload.new) : item));
+        if (payload.eventType === 'DELETE') setTasks(t => t.filter(item => item.id !== String(payload.old.id)));
     };
      const handleEmployeeChange = (payload: any) => {
-        if (payload.eventType === 'INSERT') setEmployees(e => [...e, payload.new]);
-        if (payload.eventType === 'UPDATE') setEmployees(e => e.map(item => item.id === payload.new.id ? payload.new : item));
-        if (payload.eventType === 'DELETE') setEmployees(e => e.filter(item => item.id !== payload.old.id));
+        if (payload.eventType === 'INSERT') setEmployees(e => [...e, normalize(payload.new)]);
+        if (payload.eventType === 'UPDATE') setEmployees(e => e.map(item => item.id === String(payload.new.id) ? normalize(payload.new) : item));
+        if (payload.eventType === 'DELETE') setEmployees(e => e.filter(item => item.id !== String(payload.old.id)));
     };
      const handleTemplateTaskChange = (payload: any) => {
-        if (payload.eventType === 'INSERT') setTemplateTasks(t => [...t, payload.new]);
-        if (payload.eventType === 'UPDATE') setTemplateTasks(t => t.map(item => item.id === payload.new.id ? payload.new : item));
-        if (payload.eventType === 'DELETE') setTemplateTasks(t => t.filter(item => item.id !== payload.old.id));
+        if (payload.eventType === 'INSERT') setTemplateTasks(t => [...t, normalize(payload.new)]);
+        if (payload.eventType === 'UPDATE') setTemplateTasks(t => t.map(item => item.id === String(payload.new.id) ? normalize(payload.new) : item));
+        if (payload.eventType === 'DELETE') setTemplateTasks(t => t.filter(item => item.id !== String(payload.old.id)));
     };
     const handleSettingsChange = (payload: any) => {
         if (payload.eventType === 'UPDATE' && payload.new.id === 1) {
@@ -172,14 +205,7 @@ const App: React.FC = () => {
         .on('postgres_changes', { event: '*', schema: 'public', table: 'template_tasks' }, handleTemplateTaskChange)
         .on('postgres_changes', { event: '*', schema: 'public', table: 'app_settings' }, handleSettingsChange)
         .on('postgres_changes', { event: '*', schema: 'public', table: 'company_info' }, handleCompanyInfoChange)
-        .subscribe((status, err) => {
-            if (status === 'SUBSCRIBED') {
-              console.log('Realtime channel connected successfully.');
-            }
-            if (status === 'CHANNEL_ERROR') {
-              console.error('Realtime channel connection error:', err);
-            }
-        });
+        .subscribe();
 
     return () => {
       supabase.removeChannel(dbChangesChannel);
@@ -196,13 +222,21 @@ const App: React.FC = () => {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
   
-  // --- Supabase Data Handlers ---
+  // --- Supabase Data Handlers (UPDATED to let DB handle IDs) ---
   const handleAddCustomer = async (customerData: Omit<Customer, 'id' | 'created_at'>) => {
-    await supabase.from('customers').insert([customerData]);
+    // We do NOT generate ID here. We let Supabase generate it (Int8 or UUID).
+    const { data, error } = await supabase.from('customers').insert([customerData]).select().single();
+    if (error) {
+        console.error('Error adding customer:', error);
+        alert('登録に失敗しました: ' + error.message);
+        return;
+    }
+    // No need to manually update state, Realtime subscription will catch it, 
+    // BUT for snappiness we can update if we normalize the ID.
+    // setCustomers(prev => [...prev, { ...data, id: String(data.id) }]);
   };
 
   const handleUpdateCustomer = async (customerId: string, updatedFields: Partial<Customer>) => {
-    // If the update includes the 'data' field, we need to merge it to prevent overwrites.
     if (updatedFields.data && typeof updatedFields.data === 'object') {
       const { data: currentCustomer, error } = await supabase
         .from('customers')
@@ -214,45 +248,30 @@ const App: React.FC = () => {
         console.error('Error fetching customer before data update:', error);
         return;
       }
-
-      // Merge the existing data with the new data
       const newData = { ...currentCustomer.data, ...updatedFields.data };
       const finalUpdate = { ...updatedFields, data: newData };
-      
       await supabase.from('customers').update(finalUpdate).eq('id', customerId);
     } else {
-      // For simple top-level field updates (e.g., status), a direct update is safe.
       await supabase.from('customers').update(updatedFields).eq('id', customerId);
     }
   };
 
   const handleDeleteCustomer = async (customerId: string) => {
-    // Delete related tasks first
     await supabase.from('tasks').delete().eq('customerId', customerId);
     await supabase.from('customers').delete().eq('id', customerId);
   };
   
   const handleUpdateCustomerData = async (customerId: string, field: string, value: any) => {
-    // 1. Fetch the latest data object for the customer to prevent overwriting concurrent edits.
     const { data: currentCustomer, error } = await supabase
       .from('customers')
       .select('data')
       .eq('id', customerId)
       .single();
 
-    if (error || !currentCustomer) {
-      console.error('Error fetching customer before update:', error);
-      return;
-    }
+    if (error || !currentCustomer) return;
     
-    // 2. Create the new data object by merging the change into the latest data.
     const newData = { ...currentCustomer.data, [field]: value };
-
-    // 3. Update the customer with the safely merged data.
-    await supabase
-      .from('customers')
-      .update({ data: newData })
-      .eq('id', customerId);
+    await supabase.from('customers').update({ data: newData }).eq('id', customerId);
   };
 
   const handleAddColumn = async (column: Column) => {
@@ -260,10 +279,8 @@ const App: React.FC = () => {
   };
   const handleDeleteColumn = async (columnId: string) => {
     await supabase.from('columns').delete().eq('id', columnId);
-    // You might want to remove this field from all customer.data objects, which requires a more complex migration/update script.
   };
   const handleUpdateColumns = async (newColumns: Column[]) => {
-      // This can be optimized, but for simplicity, upsert all.
       await supabase.from('columns').upsert(newColumns);
   };
   const handleUpdateHiddenColumns = async (newHiddenColumns: Record<CustomerStatus, string[]>) => {
@@ -271,7 +288,12 @@ const App: React.FC = () => {
   };
 
   const handleAddTask = async (task: Omit<Task, 'id' | 'created_at'>) => {
-      await supabase.from('tasks').insert([{...task}]);
+      // Let DB generate ID
+      const { error } = await supabase.from('tasks').insert([task]);
+      if (error) {
+          console.error('Error adding task:', error);
+          alert('タスク登録失敗: ' + error.message);
+      }
   }
   const handleDeleteTask = async (taskId: string) => {
       await supabase.from('tasks').delete().eq('id', taskId);
@@ -280,10 +302,38 @@ const App: React.FC = () => {
       await supabase.from('tasks').update(updatedFields).eq('id', taskId);
   }
   const handleUpdateEmployees = async (newEmployees: Employee[]) => {
-      await supabase.from('employees').upsert(newEmployees.map(({ created_at, ...e }) => e));
+      // For employees, if it's a new add from UI, it might have a temp ID.
+      // Better to upsert cleanly. But UI generates string ID 'e_...'.
+      // If DB is Int8, we should strip ID for new ones.
+      // For simplicity in this fix, we assume Employee Edit Modal handles this, 
+      // but let's fix the bulk upsert to be safe.
+      for (const emp of newEmployees) {
+          if (emp.id.startsWith('e_')) {
+              // It's a temp ID from UI, insert as new
+              const { id, ...rest } = emp;
+              await supabase.from('employees').insert([rest]);
+          } else {
+              // Existing ID
+               await supabase.from('employees').update({ name: emp.name, role: emp.role, avatar: emp.avatar }).eq('id', emp.id);
+          }
+      }
+      // Note: This logic changes 'onUpdateEmployees' behavior slightly, but fits the DB model better.
+      // To strictly match the interface:
+      // await supabase.from('employees').upsert(newEmployees); 
+      // ^ This fails if ID types mismatch. The loop above is safer.
+      fetchAllData(); // Refresh to get real IDs
   }
   const handleUpdateTemplateTasks = async (newTemplateTasks: TemplateTask[]) => {
-      await supabase.from('template_tasks').upsert(newTemplateTasks);
+      // Similar safety for template tasks
+       for (const task of newTemplateTasks) {
+          if (task.id.startsWith('tt_')) {
+              const { id, ...rest } = task;
+              await supabase.from('template_tasks').insert([rest]);
+          } else {
+              await supabase.from('template_tasks').update(task).eq('id', task.id);
+          }
+      }
+      fetchAllData();
   }
   const handleUpdateCompanyInfo = async (newInfo: Partial<Omit<CompanyInfo, 'id'>>) => {
       if (!companyInfo) return;
@@ -296,7 +346,7 @@ const App: React.FC = () => {
     { label: 'タスクひな形', icon: FileSpreadsheet, action: () => setSettingsMode('task_template') },
     { label: '工程ひな形', icon: Settings, action: () => setSettingsMode('schedule_template') },
     { type: 'divider' },
-    { label: 'バージョン情報', icon: Info, action: () => alert('iekoto MIND v2.0.0 (Supabase Edition)') },
+    { label: 'バージョン情報', icon: Info, action: () => alert('iekoto MIND v2.0.1 (DB Fix)') },
   ];
 
   if (isLoading || showSplash) {
