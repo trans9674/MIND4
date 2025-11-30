@@ -111,18 +111,11 @@ const App: React.FC = () => {
         if (newCustomers && newCustomers.length > 0) {
             // Generate tasks dynamically for the newly inserted customers
             const taskPayload = [];
-            // Reuse the logic from INITIAL_TASKS generation but map to actual new DB IDs
-            // Simplified distribution logic for seeding:
             const { INITIAL_TASKS: originalTasks } = await import('./constants');
-            // We just create a fresh set of tasks for the new customers
-            // Since we can't easily map the hardcoded c_IDs to the new Int IDs without complex logic,
-            // we will skip the pre-generated tasks and rely on user adding them or simple generation
-            // BUT for better UX, let's try to add some dummy tasks
             
             // Map the first few original tasks to the first new customer, etc.
             let taskCounter = 0;
              for (const cust of newCustomers) {
-                // Add a few sample tasks to each customer
                  const sampleTasks = originalTasks.slice(taskCounter, taskCounter + 4).map(({ id, customerId, ...t }) => ({
                      ...t,
                      customerId: cust.id // Link to new Customer ID
@@ -222,18 +215,16 @@ const App: React.FC = () => {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
   
-  // --- Supabase Data Handlers (UPDATED to let DB handle IDs) ---
+  // --- Supabase Data Handlers (Safe ID Generation) ---
   const handleAddCustomer = async (customerData: Omit<Customer, 'id' | 'created_at'>) => {
-    // We do NOT generate ID here. We let Supabase generate it (Int8 or UUID).
-    const { data, error } = await supabase.from('customers').insert([customerData]).select().single();
+    // Generate a secure numeric ID based on timestamp to ensure insertion works even if DB auto-increment is off
+    const newId = Date.now();
+    const { data, error } = await supabase.from('customers').insert([{ ...customerData, id: newId }]).select().single();
     if (error) {
         console.error('Error adding customer:', error);
-        alert('登録に失敗しました: ' + error.message);
+        alert(`登録に失敗しました。\nエラー: ${error.message}\n\n【重要】Supabaseの「Authentication > Policies (RLS)」設定で、INSERT(追加)が許可されているか確認してください。`);
         return;
     }
-    // No need to manually update state, Realtime subscription will catch it, 
-    // BUT for snappiness we can update if we normalize the ID.
-    // setCustomers(prev => [...prev, { ...data, id: String(data.id) }]);
   };
 
   const handleUpdateCustomer = async (customerId: string, updatedFields: Partial<Customer>) => {
@@ -244,10 +235,8 @@ const App: React.FC = () => {
         .eq('id', customerId)
         .single();
 
-      if (error || !currentCustomer) {
-        console.error('Error fetching customer before data update:', error);
-        return;
-      }
+      if (error || !currentCustomer) return;
+
       const newData = { ...currentCustomer.data, ...updatedFields.data };
       const finalUpdate = { ...updatedFields, data: newData };
       await supabase.from('customers').update(finalUpdate).eq('id', customerId);
@@ -288,8 +277,9 @@ const App: React.FC = () => {
   };
 
   const handleAddTask = async (task: Omit<Task, 'id' | 'created_at'>) => {
-      // Let DB generate ID
-      const { error } = await supabase.from('tasks').insert([task]);
+      // Generate ID manually to ensure compatibility
+      const newId = Date.now() + Math.floor(Math.random() * 1000);
+      const { error } = await supabase.from('tasks').insert([{ ...task, id: newId }]);
       if (error) {
           console.error('Error adding task:', error);
           alert('タスク登録失敗: ' + error.message);
@@ -302,33 +292,24 @@ const App: React.FC = () => {
       await supabase.from('tasks').update(updatedFields).eq('id', taskId);
   }
   const handleUpdateEmployees = async (newEmployees: Employee[]) => {
-      // For employees, if it's a new add from UI, it might have a temp ID.
-      // Better to upsert cleanly. But UI generates string ID 'e_...'.
-      // If DB is Int8, we should strip ID for new ones.
-      // For simplicity in this fix, we assume Employee Edit Modal handles this, 
-      // but let's fix the bulk upsert to be safe.
       for (const emp of newEmployees) {
           if (emp.id.startsWith('e_')) {
-              // It's a temp ID from UI, insert as new
+              // New employee from UI: Generate ID
               const { id, ...rest } = emp;
-              await supabase.from('employees').insert([rest]);
+              const newId = Date.now() + Math.floor(Math.random() * 1000);
+              await supabase.from('employees').insert([{...rest, id: newId}]);
           } else {
-              // Existing ID
                await supabase.from('employees').update({ name: emp.name, role: emp.role, avatar: emp.avatar }).eq('id', emp.id);
           }
       }
-      // Note: This logic changes 'onUpdateEmployees' behavior slightly, but fits the DB model better.
-      // To strictly match the interface:
-      // await supabase.from('employees').upsert(newEmployees); 
-      // ^ This fails if ID types mismatch. The loop above is safer.
-      fetchAllData(); // Refresh to get real IDs
+      fetchAllData();
   }
   const handleUpdateTemplateTasks = async (newTemplateTasks: TemplateTask[]) => {
-      // Similar safety for template tasks
        for (const task of newTemplateTasks) {
           if (task.id.startsWith('tt_')) {
               const { id, ...rest } = task;
-              await supabase.from('template_tasks').insert([rest]);
+              const newId = Date.now() + Math.floor(Math.random() * 1000);
+              await supabase.from('template_tasks').insert([{...rest, id: newId}]);
           } else {
               await supabase.from('template_tasks').update(task).eq('id', task.id);
           }
@@ -346,7 +327,7 @@ const App: React.FC = () => {
     { label: 'タスクひな形', icon: FileSpreadsheet, action: () => setSettingsMode('task_template') },
     { label: '工程ひな形', icon: Settings, action: () => setSettingsMode('schedule_template') },
     { type: 'divider' },
-    { label: 'バージョン情報', icon: Info, action: () => alert('iekoto MIND v2.0.1 (DB Fix)') },
+    { label: 'バージョン情報', icon: Info, action: () => alert('iekoto MIND v2.0.2 (Force ID Fix)') },
   ];
 
   if (isLoading || showSplash) {
