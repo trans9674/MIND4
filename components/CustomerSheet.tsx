@@ -44,7 +44,7 @@ const CurrencyInput = ({
   return (
     <input
       type={isDomFocused ? "number" : "text"}
-      className="w-full bg-white focus:ring-1 focus:ring-blue-500 rounded px-1 py-1 border-transparent border hover:border-black/10 text-right text-sm"
+      className="w-full bg-white focus:ring-1 focus:ring-blue-500 rounded px-1 py-1 border border-gray-300 hover:border-blue-400 text-right text-sm transition-colors shadow-sm"
       value={displayValue}
       onChange={onChange}
       onFocus={() => {
@@ -241,6 +241,14 @@ const CustomerSheet: React.FC<Props> = ({ customers, columns, hiddenColumns, emp
   const handleAddCustomer = () => {
     if (!newCustomerName) return;
     
+    // Create initial data object matching current columns
+    const initialData: Record<string, any> = {};
+    columns.forEach(col => {
+      initialData[col.id] = '';
+    });
+    // Overwrite with form data
+    initialData.sales_rep = newCustomerRep;
+    
     const newCustomer: Omit<Customer, 'id' | 'created_at'> = {
       name: newCustomerName,
       status: newCustomerStatus,
@@ -250,19 +258,7 @@ const CustomerSheet: React.FC<Props> = ({ customers, columns, hiddenColumns, emp
         lat: 34.3853 + (Math.random() - 0.5) * 0.1, 
         lng: 132.4553 + (Math.random() - 0.5) * 0.1
       },
-      data: {
-        sales_rep: newCustomerRep,
-        architect: '',
-        ic: '',
-        drawing_rep: '',
-        application_rep: '',
-        construction_rep: '',
-        constructor: '',
-        location: '',
-        contract_date: '',
-        amount: 0,
-        phone: ''
-      },
+      data: initialData,
     };
     
     onAddCustomer(newCustomer);
@@ -274,8 +270,9 @@ const CustomerSheet: React.FC<Props> = ({ customers, columns, hiddenColumns, emp
 
   // --- Cell Editing Logic ---
   const handleCellFocus = (customerId: string, field: string) => {
+    // If clicking a different cell, blur the previous one
     if (editingCell && (editingCell.customerId !== customerId || editingCell.field !== field)) {
-      handleCellBlur();
+      // NOTE: handleCellBlur will be called automatically by the blur event of the previous input
     }
     const customer = customers.find(c => c.id === customerId);
     setEditingCell({ customerId, field, value: customer?.data[field] ?? '' });
@@ -309,35 +306,14 @@ const CustomerSheet: React.FC<Props> = ({ customers, columns, hiddenColumns, emp
         return;
     }
 
-    setConfirmationModal({
-      title: '変更を確認',
-      content: (
-        <>
-          <p className="mt-2 text-sm text-gray-600">【変更してよろしいですか？】</p>
-          <div className="mt-4 bg-gray-50 p-3 rounded-lg border text-sm space-y-1">
-            <p><span className="font-medium text-gray-500">顧客名:</span> <span className="font-bold">{customer?.name}</span></p>
-            <p><span className="font-medium text-gray-500">項目:</span> {columns.find(c => c.id === field)?.title}</p>
-            <p><span className="font-medium text-gray-500">変更前:</span> <span className="text-red-600">{String(oldValue) || '未設定'}</span></p>
-            <p><span className="font-medium text-gray-500">変更後:</span> <span className="text-green-600">{String(newValue) || '未設定'}</span></p>
-          </div>
-        </>
-      ),
-      onConfirm: () => {
-        let finalValue = newValue;
-        if (col?.type === 'currency') {
-          finalValue = Number(String(newValue).replace(/,/g, '')) || 0;
-        }
-        onUpdateCustomerData(customerId, field, finalValue);
-        setConfirmationModal(null);
-        setEditingCell(null);
-      },
-      onCancel: () => {
-        setConfirmationModal(null);
-        setEditingCell(null);
-      },
-      confirmButtonText: '変更する',
-      confirmButtonClass: 'bg-blue-600 hover:bg-blue-700',
-    });
+    // Direct update without confirmation for smoother experience in this version
+    // Can enable confirmation for specific critical fields if needed
+    let finalValue = newValue;
+    if (col?.type === 'currency') {
+      finalValue = Number(String(newValue).replace(/,/g, '')) || 0;
+    }
+    onUpdateCustomerData(customerId, field, finalValue);
+    setEditingCell(null);
   };
 
   const handleCellBlur = () => {
@@ -347,8 +323,9 @@ const CustomerSheet: React.FC<Props> = ({ customers, columns, hiddenColumns, emp
   };
   
   const handleDiscreteChange = (customerId: string, field: string, newValue: any) => {
-    setEditingCell({ customerId, field, value: newValue });
-    triggerConfirmation(customerId, field, newValue);
+    // Immediate update for discrete values (select, date picker)
+    onUpdateCustomerData(customerId, field, newValue);
+    setEditingCell(null);
   };
   
   const handleAddOptionSubmit = () => {
@@ -601,7 +578,7 @@ const CustomerSheet: React.FC<Props> = ({ customers, columns, hiddenColumns, emp
           </button>
         </div>
 
-        <div className="hidden md:flex items-center">
+        <div className="flex items-center">
            {!isAddColExpanded ? (
                <button 
                  onClick={() => setIsAddColExpanded(true)}
@@ -615,7 +592,7 @@ const CustomerSheet: React.FC<Props> = ({ customers, columns, hiddenColumns, emp
                     <select
                         value={newColType}
                         onChange={(e) => setNewColType(e.target.value as ColumnType)}
-                        className="border rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                        className="border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
                     >
                         <option value="text">テキスト</option>
                         <option value="select">リスト</option>
@@ -628,7 +605,7 @@ const CustomerSheet: React.FC<Props> = ({ customers, columns, hiddenColumns, emp
                         placeholder="項目名"
                         value={newColName}
                         onChange={(e) => setNewColName(e.target.value)}
-                        className="border rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-32 bg-white"
+                        className="border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-32 bg-white"
                         autoFocus
                         onKeyDown={(e) => e.key === 'Enter' && handleAddColumn()}
                     />
@@ -660,7 +637,7 @@ const CustomerSheet: React.FC<Props> = ({ customers, columns, hiddenColumns, emp
         <table className="min-w-full divide-y divide-gray-200">
           <thead className="bg-gray-50 sticky top-0 z-30 will-change-transform">
             <tr>
-              <th className="px-2 py-2 lg:px-4 lg:py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider sticky left-0 bg-gray-50 z-40 border-r border-gray-200 will-change-transform h-10">
+              <th className="px-2 py-2 lg:px-4 lg:py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider sticky left-0 bg-gray-50 z-40 border-r border-gray-200 will-change-transform h-10 shadow-sm">
                 顧客名
               </th>
               {visibleColumns.map((col, colIndex) => (
@@ -728,6 +705,7 @@ const CustomerSheet: React.FC<Props> = ({ customers, columns, hiddenColumns, emp
                   </td>
                   {visibleColumns.map(col => {
                       const isEditing = editingCell?.customerId === customer.id && editingCell?.field === col.id;
+                      // Fallback to empty string to ensure controlled input
                       const valueToShow = isEditing ? editingCell.value : (customer.data[col.id] ?? '');
                       const isLocationEmpty = col.id === 'location' && !valueToShow;
 
@@ -747,7 +725,7 @@ const CustomerSheet: React.FC<Props> = ({ customers, columns, hiddenColumns, emp
                                   field: col.id, 
                                   initialDate: customer.data[col.id] ?? null 
                               })}
-                              className="w-full text-left bg-white focus:ring-1 focus:ring-blue-500 rounded px-1 py-1 border-transparent border hover:border-black/10 text-sm"
+                              className="w-full text-left bg-white focus:ring-1 focus:ring-blue-500 rounded px-1 py-1 border border-gray-300 hover:border-blue-400 text-sm shadow-sm"
                           >
                               {(customer.data[col.id] ?? '') || <span className="text-gray-400">日付未設定</span>}
                           </button>
@@ -758,7 +736,7 @@ const CustomerSheet: React.FC<Props> = ({ customers, columns, hiddenColumns, emp
                                   value={valueToShow}
                                   onFocus={() => handleCellFocus(customer.id, col.id)}
                                   onChange={(e) => handleDiscreteChange(customer.id, col.id, e.target.value)}
-                                  className="w-full bg-white focus:ring-1 focus:ring-blue-500 rounded px-1 py-1 border-transparent border hover:border-black/10 text-sm"
+                                  className="w-full bg-white focus:ring-1 focus:ring-blue-500 rounded px-1 py-1 border border-gray-300 hover:border-blue-400 text-sm shadow-sm"
                               >
                                   <option value="">-</option>
                                   {getEmployeeOptions(col.id).map(emp => (
@@ -783,7 +761,7 @@ const CustomerSheet: React.FC<Props> = ({ customers, columns, hiddenColumns, emp
                                       handleDiscreteChange(customer.id, col.id, e.target.value);
                                   }
                               }}
-                              className="w-full bg-white focus:ring-1 focus:ring-blue-500 rounded px-1 py-1 border-transparent border hover:border-black/10 text-sm"
+                              className="w-full bg-white focus:ring-1 focus:ring-blue-500 rounded px-1 py-1 border border-gray-300 hover:border-blue-400 text-sm shadow-sm"
                               >
                                   <option value="">-</option>
                                   {col.options?.map(opt => (
@@ -794,7 +772,7 @@ const CustomerSheet: React.FC<Props> = ({ customers, columns, hiddenColumns, emp
                           ) : col.type === 'phone' ? (
                               <input
                               type="tel"
-                              className="w-full bg-white focus:ring-1 focus:ring-blue-500 rounded px-1 py-1 border-transparent border hover:border-black/10 text-sm"
+                              className="w-full bg-white focus:ring-1 focus:ring-blue-500 rounded px-1 py-1 border border-gray-300 hover:border-blue-400 text-sm shadow-sm"
                               value={valueToShow}
                               onFocus={() => handleCellFocus(customer.id, col.id)}
                               onChange={(e) => handleCellValueChange(e.target.value)}
@@ -804,7 +782,7 @@ const CustomerSheet: React.FC<Props> = ({ customers, columns, hiddenColumns, emp
                           ) : (
                           <input
                               type="text"
-                              className={`w-full bg-white focus:ring-1 focus:ring-blue-500 rounded px-1 py-1 border-transparent border hover:border-black/10 text-sm ${isLocationEmpty ? 'blink-warning-bg' : ''}`}
+                              className={`w-full bg-white focus:ring-1 focus:ring-blue-500 rounded px-1 py-1 border border-gray-300 hover:border-blue-400 text-sm shadow-sm ${isLocationEmpty ? 'blink-warning-bg border-red-300' : ''}`}
                               value={valueToShow}
                               onFocus={() => handleCellFocus(customer.id, col.id)}
                               onChange={(e) => handleCellValueChange(e.target.value)}
