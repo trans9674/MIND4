@@ -267,8 +267,8 @@ const App: React.FC = () => {
 
     try {
         // 4. Send Payload: Exclude ID so DB generates it (handles auto-increment columns)
-        // We will swap the ID later if DB returns a different one.
-        const { id: _, ...dbPayload } = newCustomer;
+        // Also exclude created_at so DB generates timestamp (prevents "invalid input syntax for type time" error)
+        const { id: _, created_at: __, ...dbPayload } = newCustomer;
 
         const { data, error } = await supabase
             .from('customers')
@@ -394,8 +394,8 @@ const App: React.FC = () => {
       setTasks(prev => [...prev, newTask]); 
 
       try {
-        // 3. Send Payload: Exclude ID so DB generates it
-        const { id: _, ...dbPayload } = newTask;
+        // 3. Send Payload: Exclude ID and created_at so DB generates them
+        const { id: _, created_at: __, ...dbPayload } = newTask;
 
         const { data, error } = await supabase.from('tasks').insert([dbPayload]).select().single(); 
         if (error) throw error;
