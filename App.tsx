@@ -234,11 +234,15 @@ const App: React.FC = () => {
     // Optimistic Update to prevent UI lag
     setCustomers(prev => [...prev, payload]); 
 
+    // Remove created_at from DB payload to let DB handle defaults
+    // This avoids type mismatch errors if the DB column is 'time' instead of 'timestamp'
+    const { created_at, ...dbPayload } = payload;
+
     // Insert and SELECT back the data to ensure we have the authoritative version
     // This also handles cases where the DB might generate IDs or defaults
     const { data, error } = await supabase
         .from('customers')
-        .insert([payload])
+        .insert([dbPayload])
         .select()
         .single();
     
@@ -352,7 +356,10 @@ const App: React.FC = () => {
       
       setTasks(prev => [...prev, payload]); 
 
-      const { error } = await supabase.from('tasks').insert([payload]);
+      // Exclude created_at from DB payload
+      const { created_at, ...dbPayload } = payload;
+
+      const { error } = await supabase.from('tasks').insert([dbPayload]);
       if (error) {
           console.error('Error adding task:', error);
           alert('タスク登録失敗: ' + error.message);
