@@ -38,6 +38,11 @@ const App: React.FC = () => {
   const [settingsMode, setSettingsMode] = useState<SettingsMode>(null);
   const [isAdminPanelOpen, setIsAdminPanelOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+
+  // Ref to track pending optimistic adds to prevent overwrite by background fetches
+  // We keep items here until they are confirmed to exist in a fetch response
+  const pendingAddsRef = useRef<Set<string>>(new Set());
+  const pendingTaskAddsRef = useRef<Set<string>>(new Set());
   
   // Splash Screen Timer
   useEffect(() => {
@@ -69,9 +74,43 @@ const App: React.FC = () => {
     ]);
 
     // Normalize IDs to string to ensure compatibility
-    setCustomers((customersData || []).map(c => ({ ...c, id: String(c.id) })));
+    // Use functional update to preserve pending optimistic additions
+    setCustomers(prev => {
+        const fetched = (customersData || []).map(c => ({ ...c, id: String(c.id) }));
+        
+        // Remove pending IDs ONLY if they have arrived in the fetch
+        fetched.forEach(f => {
+            if (pendingAddsRef.current.has(f.id)) {
+                pendingAddsRef.current.delete(f.id);
+            }
+        });
+
+        // Keep pending items that are still not in the fetched list (stale fetch protection)
+        const pendingItems = prev.filter(c => 
+            pendingAddsRef.current.has(c.id) && 
+            !fetched.some(f => f.id === c.id)
+        );
+        return [...fetched, ...pendingItems];
+    });
+
     setColumns(columnsData || []);
-    setTasks((tasksData || []).map(t => ({ ...t, id: String(t.id), customerId: String(t.customerId) })));
+    
+    setTasks(prev => {
+        const fetched = (tasksData || []).map(t => ({ ...t, id: String(t.id), customerId: String(t.customerId) }));
+        
+        fetched.forEach(f => {
+            if (pendingTaskAddsRef.current.has(f.id)) {
+                pendingTaskAddsRef.current.delete(f.id);
+            }
+        });
+
+        const pendingItems = prev.filter(t => 
+             pendingTaskAddsRef.current.has(t.id) && 
+             !fetched.some(f => f.id === t.id)
+        );
+        return [...fetched, ...pendingItems];
+    });
+
     setEmployees((employeesData || []).map(e => ({ ...e, id: String(e.id) })));
     setTemplateTasks((templateTasksData || []).map(t => ({ ...t, id: String(t.id) })));
     setHiddenColumns(settingsData?.hiddenColumns || {});
@@ -90,26 +129,17 @@ const App: React.FC = () => {
       if (count === 0) {
         console.log("No data found. Seeding initial data...");
         try {
-            // Use UPSERT instead of INSERT to safely resume interrupted seeding
-            
-            // 1. Insert Static Data
             await supabase.from('columns').upsert(INITIAL_COLUMNS);
             await supabase.from('app_settings').upsert({ id: 1, hiddenColumns: {} });
             await supabase.from('company_info').upsert({ id: 1, ...INITIAL_COMPANY_INFO });
-
-            // 2. Insert Employees (Explicit IDs)
             await supabase.from('employees').upsert(INITIAL_EMPLOYEES);
-
-            // 3. Insert Template Tasks (Explicit IDs)
             await supabase.from('template_tasks').upsert(INITIAL_TEMPLATE_TASKS);
-
-            // 4. Insert Customers (Explicit IDs)
-            await supabase.from('customers').upsert(INITIAL_CUSTOMERS);
-
-            // 5. Insert Tasks (Explicit IDs)
-            await supabase.from('tasks').upsert(INITIAL_TASKS);
             
-            console.log("Seeding completed successfully.");
+            // Try seeding customers/tasks. 
+            await supabase.from('customers').upsert(INITIAL_CUSTOMERS).catch(e => console.warn("Customer seeding skipped", e));
+            await supabase.from('tasks').upsert(INITIAL_TASKS).catch(e => console.warn("Task seeding skipped", e));
+            
+            console.log("Seeding attempt completed.");
         } catch (e) {
             console.error("Seeding failed:", e);
         }
@@ -143,14 +173,17 @@ const App: React.FC = () => {
     const handleCustomerChange = (payload: any) => {
         if (payload.eventType === 'INSERT') {
             setCustomers(c => {
-                // Prevent duplicates if already added optimistically
-                if (c.some(existing => existing.id === String(payload.new.id))) return c;
+                const newId = String(payload.new.id);
+                // If we already have this ID (from our own insertion), don't duplicate
+                if (c.some(existing => existing.id === newId)) return c;
                 return [...c, normalize(payload.new)];
             });
         }
         if (payload.eventType === 'UPDATE') setCustomers(c => c.map(item => item.id === String(payload.new.id) ? normalize(payload.new) : item));
         if (payload.eventType === 'DELETE') setCustomers(c => c.filter(item => item.id !== String(payload.old.id)));
     };
+    
+    // ... other handlers ...
     const handleColumnChange = (payload: any) => {
         if (payload.eventType === 'INSERT') setColumns(c => [...c, payload.new]);
         if (payload.eventType === 'UPDATE') setColumns(c => c.map(item => item.id === payload.new.id ? payload.new : item));
@@ -209,64 +242,66 @@ const App: React.FC = () => {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
   
-  // --- Supabase Data Handlers (Explicit String ID & Created_at) ---
+  // --- Supabase Data Handlers (ID Swapping Logic with Robust Protection) ---
   const handleAddCustomer = async (customerData: Omit<Customer, 'id' | 'created_at'>) => {
-    // Generate a strictly numeric-looking string ID to be safe for both BigInt and Text columns
-    // We use c_ prefix consistency if possible, but numeric string is safer for BigInt columns if schema changed.
-    // However, since INITIAL_CUSTOMERS uses 'c_', we stick to 'c_' prefix for consistency.
-    const newId = `c_${Date.now()}`;
+    // 1. Generate Persistent ID (DB likely has text PK without auto-gen)
+    const newId = `c_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
     
-    // Initialize data object with empty strings for all columns to ensure inputs work
+    // 2. Add to Pending to protect against stale fetches removing it
+    pendingAddsRef.current.add(newId);
+    
     const initialData: Record<string, any> = { ...customerData.data };
     columns.forEach(col => {
-        if (initialData[col.id] === undefined) {
-            initialData[col.id] = '';
-        }
+        if (initialData[col.id] === undefined) initialData[col.id] = '';
     });
 
-    const payload = { 
+    const newCustomer = { 
         ...customerData, 
-        id: newId,
+        id: newId, 
         data: initialData,
         created_at: new Date().toISOString()
     };
     
-    // Optimistic Update to prevent UI lag
-    setCustomers(prev => [...prev, payload]); 
+    // 3. Optimistic Update
+    setCustomers(prev => [...prev, newCustomer]); 
 
-    // Remove created_at from DB payload to let DB handle defaults
-    // This avoids type mismatch errors if the DB column is 'time' instead of 'timestamp'
-    const { created_at, ...dbPayload } = payload;
+    try {
+        // 4. Send Payload: Exclude ID so DB generates it (handles auto-increment columns)
+        // We will swap the ID later if DB returns a different one.
+        const { id: _, ...dbPayload } = newCustomer;
 
-    // Insert and SELECT back the data to ensure we have the authoritative version
-    // This also handles cases where the DB might generate IDs or defaults
-    const { data, error } = await supabase
-        .from('customers')
-        .insert([dbPayload])
-        .select()
-        .single();
-    
-    if (error) {
-        console.error('Error adding customer:', error);
-        alert(`登録に失敗しました。\nエラー: ${error.message}\n(Code: ${error.code})`);
+        const { data, error } = await supabase
+            .from('customers')
+            .insert([dbPayload])
+            .select()
+            .single();
+        
+        if (error) throw error;
+
+        if (data) {
+            // 5. Success: Check ID
+            const returnedId = String(data.id);
+            
+            // If DB modified ID (unlikely if we sent it), update state
+            if (returnedId !== newId) {
+                pendingAddsRef.current.add(returnedId);
+                setCustomers(prev => prev.map(c => c.id === newId ? { ...data, id: returnedId } : c));
+                pendingAddsRef.current.delete(newId);
+            }
+            
+            // Delay removing ID to ensure any in-flight fetches dealing with stale state
+            // don't accidentally remove the item.
+            setTimeout(() => {
+                pendingAddsRef.current.delete(newId);
+                if (returnedId !== newId) pendingAddsRef.current.delete(returnedId);
+            }, 5000);
+        }
+    } catch (e: any) {
+        console.error('Error adding customer:', e);
+        alert(`登録に失敗しました。\nエラー: ${e.message}`);
         // Revert Optimistic Update
         setCustomers(prev => prev.filter(c => c.id !== newId));
-        return;
-    }
-
-    if (data) {
-        // Sync the optimistic entry with the real server data
-        // This is crucial if a background fetch (e.g. on focus) wiped the optimistic entry
-        const realCustomer = { ...data, id: String(data.id) };
-        setCustomers(prev => {
-            const exists = prev.some(c => c.id === realCustomer.id);
-            if (exists) {
-                return prev.map(c => c.id === realCustomer.id ? realCustomer : c);
-            } else {
-                // If it disappeared (e.g. due to intermediate fetch), add it back
-                return [...prev, realCustomer];
-            }
-        });
+        pendingAddsRef.current.delete(newId);
     }
   };
 
@@ -345,26 +380,45 @@ const App: React.FC = () => {
   };
 
   const handleAddTask = async (task: Omit<Task, 'id' | 'created_at'>) => {
-      // Use strictly numeric-like string ID
-      const newId = Date.now().toString() + Math.floor(Math.random() * 1000).toString();
+      // 1. Generate Persistent ID
+      const newId = `t_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+      pendingTaskAddsRef.current.add(newId);
       
-      const payload = { 
+      const newTask = { 
           ...task, 
           id: newId,
           created_at: new Date().toISOString()
       };
       
-      setTasks(prev => [...prev, payload]); 
+      // 2. Optimistic Update
+      setTasks(prev => [...prev, newTask]); 
 
-      // Exclude created_at from DB payload
-      const { created_at, ...dbPayload } = payload;
+      try {
+        // 3. Send Payload: Exclude ID so DB generates it
+        const { id: _, ...dbPayload } = newTask;
 
-      const { error } = await supabase.from('tasks').insert([dbPayload]);
-      if (error) {
+        const { data, error } = await supabase.from('tasks').insert([dbPayload]).select().single(); 
+        if (error) throw error;
+
+        // 4. Success check
+        if (data) {
+            const returnedId = String(data.id);
+            if (returnedId !== newId) {
+                pendingTaskAddsRef.current.add(returnedId);
+                setTasks(prev => prev.map(t => t.id === newId ? { ...t, ...data, id: returnedId, customerId: String(data.customerId) } : t));
+                pendingTaskAddsRef.current.delete(newId);
+            }
+            
+            setTimeout(() => {
+                pendingTaskAddsRef.current.delete(newId);
+                if (returnedId !== newId) pendingTaskAddsRef.current.delete(returnedId);
+            }, 5000);
+        }
+      } catch (error: any) {
           console.error('Error adding task:', error);
           alert('タスク登録失敗: ' + error.message);
+          pendingTaskAddsRef.current.delete(newId);
           setTasks(prev => prev.filter(t => t.id !== newId));
-          return;
       }
   }
   const handleDeleteTask = async (taskId: string) => {
@@ -402,7 +456,7 @@ const App: React.FC = () => {
     { label: 'タスクひな形', icon: FileSpreadsheet, action: () => setSettingsMode('task_template') },
     { label: '工程ひな形', icon: Settings, action: () => setSettingsMode('schedule_template') },
     { type: 'divider' },
-    { label: 'バージョン情報', icon: Info, action: () => alert('iekoto MIND v2.0.8 (Stable)') },
+    { label: 'バージョン情報', icon: Info, action: () => alert('iekoto MIND v2.0.9 (Fix)') },
   ];
 
   if (isLoading || showSplash) {
