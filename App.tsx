@@ -37,6 +37,7 @@ const App: React.FC = () => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [settingsMode, setSettingsMode] = useState<SettingsMode>(null);
   const [isAdminPanelOpen, setIsAdminPanelOpen] = useState(false);
+  const [showVersionModal, setShowVersionModal] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
   // Ref to track pending optimistic adds to prevent overwrite by background fetches
@@ -456,7 +457,7 @@ const App: React.FC = () => {
     { label: 'タスクひな形', icon: FileSpreadsheet, action: () => setSettingsMode('task_template') },
     { label: '工程ひな形', icon: Settings, action: () => setSettingsMode('schedule_template') },
     { type: 'divider' },
-    { label: 'バージョン情報', icon: Info, action: () => alert('iekoto MIND v2.0.9 (Fix)') },
+    { label: 'バージョン情報', icon: Info, action: () => setShowVersionModal(true) },
   ];
 
   if (isLoading || showSplash) {
@@ -571,6 +572,27 @@ const App: React.FC = () => {
           onUpdateTemplateTasks={handleUpdateTemplateTasks}
         />
         <AdminPanel isOpen={isAdminPanelOpen} onClose={() => setIsAdminPanelOpen(false)} customers={customers} employees={employees} />
+        
+        {/* Version Modal */}
+        {showVersionModal && (
+         <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setShowVersionModal(false)}>
+            <div className="bg-white rounded-xl shadow-2xl max-w-sm w-full p-6 animate-in zoom-in-95 duration-200" onClick={e => e.stopPropagation()}>
+                <div className="flex flex-col items-center text-center">
+                    <div className="bg-blue-100 p-3 rounded-full mb-4">
+                        <Info className="w-8 h-8 text-blue-600" />
+                    </div>
+                    <h3 className="text-xl font-bold text-gray-800 mb-2">ie-koto MIND</h3>
+                    <p className="text-gray-500 mb-6">Version 1.1</p>
+                    <button 
+                        onClick={() => setShowVersionModal(false)}
+                        className="w-full py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors shadow-sm"
+                    >
+                        閉じる
+                    </button>
+                </div>
+            </div>
+         </div>
+       )}
       </div>
     </>
   );
